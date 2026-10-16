@@ -1,0 +1,92 @@
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+local Settings = require(Shared.Settings)
+local Catalog = require(Shared.Catalog)
+local Grid = require(Shared.Grid)
+local Economy = require(script.Parent.core.Economy)
+local World = require(script.Parent.World)
+
+local BuildService = {}
+BuildService.__index = BuildService
+
+function BuildService.new(data, world)
+	return setmetatable({ data = data, world = world, plots = {}, slots = {} }, BuildService)
+end
+
+function BuildService:render(player, piece)
+	local plot = self.plots[player]
+	local item = Catalog[piece.item]
+	local width, depth = Grid.dimensions(item, piece.rotation)
+	local x, z = Grid.center(piece.x, piece.z, width, depth, Settings.Grid.cells, Settings.Grid.size)
+	local colors = { Crate = Color3.fromRGB(173, 124, 76), Bench = Color3.fromRGB(91, 141, 157), Lamp = Color3.fromRGB(121, 237, 200) }
+	local part = World.part(plot.folder, tostring(piece.id), Vector3.new(item.width * 4 - 0.16, item.height, item.depth * 4 - 0.16), Vector3.zero, colors[piece.item])
+	part.CFrame = plot.base.CFrame * CFrame.new(x, plot.base.Size.Y / 2 + item.height / 2, z) * CFrame.Angles(0, -piece.rotation * math.pi / 2, 0)
+	part:SetAttribute("PieceId", piece.id)
+	part:SetAttribute("Owner", player.UserId)
+	if piece.item == "Lamp" then
+		part.Material = Enum.Material.Neon
+		local light = Instance.new("PointLight")
+		light.Color, light.Range, light.Brightness, light.Parent = colors.Lamp, 16, 1.5, part
+	end
+end
+
+function BuildService:add(player)
+	local data = self.data:get(player)
+	if not data then return end
+	local slot = 1
+	while self.slots[slot] do slot += 1 end
+	self.slots[slot] = player
+	local folder = Instance.new("Folder")
+	folder.Name, folder.Parent = "Plot_" .. player.UserId, self.world.folder
+	local base = World.part(folder, "Base", Vector3.new(32, 0.5, 32), Vector3.new(40, 0.25, (slot - 1) * 42), Color3.fromRGB(49, 66, 73))
+	base:SetAttribute("Owner", player.UserId)
+	World.label(base, player.DisplayName .. "'s plot\n03 / GRID PLACEMENT")
+	for cell = 0, 8 do
+		local offset = -16 + cell * 4
+		World.part(folder, "Grid", Vector3.new(0.04, 0.02, 32), base.Position + Vector3.new(offset, 0.26, 0), Color3.fromRGB(85, 109, 115)).CanCollide = false
+		World.part(folder, "Grid", Vector3.new(32, 0.02, 0.04), base.Position + Vector3.new(0, 0.26, offset), Color3.fromRGB(85, 109, 115)).CanCollide = false
+	end
+	self.plots[player] = { base = base, folder = folder, slot = slot }
+	for _, piece in data.builds do self:render(player, piece) end
+	player:SetAttribute("PlotPosition", base.Position)
+end
+
+function BuildService:near(player)
+	local plot = self.plots[player]
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	return plot and root and humanoid and humanoid.Health > 0
+		and (root.Position - plot.base.Position).Magnitude <= Settings.Grid.reach
+end
+
+function BuildService:place(player, payload)
+	local data = self.data:get(player)
+	if not data or not self:near(player) then return false, "Move closer to your plot." end
+	if type(payload.item) ~= "string" or #payload.item > 24 then return false end
+	local piece, reason = Economy.place(data, Catalog, Grid, payload.item, payload.x, payload.z, payload.rotation)
+	if not piece then return false, reason end
+	self:render(player, piece)
+	return true, "Placed " .. Catalog[piece.item].name .. "."
+end
+
+function BuildService:remove(player, payload)
+	local data = self.data:get(player)
+	if not data or not self:near(player) then return false, "Move closer to your plot." end
+	if not Grid.integer(payload.id, 1, 1000000000) then return false end
+	local ok, reason = Economy.remove(data, payload.id)
+	if ok then
+		local part = self.plots[player].folder:FindFirstChild(tostring(payload.id))
+		if part then part:Destroy() end
+	end
+	return ok, reason
+end
+
+function BuildService:cleanup(player)
+	local plot = self.plots[player]
+	if not plot then return end
+	self.slots[plot.slot] = nil
+	plot.folder:Destroy()
+	self.plots[player] = nil
+end
+
+return BuildService
