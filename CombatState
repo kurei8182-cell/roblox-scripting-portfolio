@@ -1,5 +1,3 @@
---!strict
-
 export type State = {
 	combo: number, lastAttack: number, busyUntil: number, stunUntil: number,
 	parryUntil: number, invulnerableUntil: number, serial: number,
