@@ -1,0 +1,70 @@
+export type Piece = { id: number, item: string, x: number, z: number, rotation: number }
+export type Data = {
+	version: number, coins: number, inventory: { [string]: number },
+	builds: { Piece }, nextId: number, kills: number, questClaimed: boolean,
+}
+
+local Profile = {}
+
+function Profile.new(): Data
+	return {
+		version = 1, coins = 200,
+		inventory = { Medkit = 2, Crate = 3, Bench = 1, Lamp = 1 },
+		builds = {}, nextId = 1, kills = 0, questClaimed = false,
+	}
+end
+
+function Profile.copy(data: Data): Data
+	local copy = table.clone(data)
+	copy.inventory = table.clone(data.inventory)
+	copy.builds = {}
+	for _, piece in data.builds do
+		table.insert(copy.builds, table.clone(piece))
+	end
+	return copy
+end
+
+function Profile.decode(raw: any, catalog: any, grid: any): Data?
+	if type(raw) ~= "table" or raw.version ~= 1 or type(raw.inventory) ~= "table"
+		or type(raw.builds) ~= "table" or type(raw.questClaimed) ~= "boolean" then
+		return nil
+	end
+	if not grid.integer(raw.coins, 0, 1000000000) or not grid.integer(raw.kills, 0, 1000000000)
+		or not grid.integer(raw.nextId, 1, 1000000000) then
+		return nil
+	end
+	local data = Profile.new()
+	data.coins, data.kills = raw.coins, raw.kills
+	data.questClaimed, data.nextId = raw.questClaimed, raw.nextId
+	data.inventory = {}
+	for id, count in raw.inventory do
+		if type(id) ~= "string" or not catalog[id] or not grid.integer(count, 0, catalog[id].limit) then
+			return nil
+		end
+		data.inventory[id] = count
+	end
+	local seen = {}
+	local totals = table.clone(data.inventory)
+	local count = 0
+	for index, piece in raw.builds do
+		count += 1
+		if count > 40 or not grid.integer(index, 1, #raw.builds) or type(piece) ~= "table"
+			or not grid.integer(piece.id, 1, raw.nextId - 1) or seen[piece.id]
+			or type(piece.item) ~= "string" then
+			return nil
+		end
+		local fits = grid.fits(data.builds, catalog, piece.item, piece.x, piece.z, piece.rotation, 8)
+		if not fits then
+			return nil
+		end
+		totals[piece.item] = (totals[piece.item] or 0) + 1
+		if totals[piece.item] > catalog[piece.item].limit then
+			return nil
+		end
+		seen[piece.id] = true
+		table.insert(data.builds, { id = piece.id, item = piece.item, x = piece.x, z = piece.z, rotation = piece.rotation })
+	end
+	return data
+end
+
+return Profile
