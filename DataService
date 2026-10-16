@@ -1,0 +1,163 @@
+local DataStoreService = game:GetService("DataStoreService")
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local Shared = game:GetService("ReplicatedStorage"):WaitForChild("Shared")
+
+local Profile = require(script.Parent.core.Profile)
+local Lease = require(script.Parent.core.Lease)
+local Catalog = require(Shared.Catalog)
+local Grid = require(Shared.Grid)
+
+local STUDIO_SAVING = false
+local STORE_NAME = "KurodakooSystemsLab_v1"
+local LEASE_SECONDS = 180
+local SAVE_INTERVAL = 45
+
+local DataService = {}
+DataService.__index = DataService
+
+function DataService.new()
+	local persistent = not RunService:IsStudio() or STUDIO_SAVING
+	return setmetatable({
+		sessions = {}, loading = {}, closing = false, persistent = persistent,
+		store = if persistent then DataStoreService:GetDataStore(STORE_NAME) else nil,
+	}, DataService)
+end
+
+function DataService:get(player)
+	local session = self.sessions[player]
+	if session and session.active and not session.closing and os.time() < session.expires then
+		return session.data
+	end
+	return nil
+end
+
+function DataService:load(player)
+	if self.closing or self.loading[player] or self.sessions[player] then
+		return false
+	end
+	self.loading[player] = true
+	local token = HttpService:GenerateGUID(false)
+	local data, expires
+	local failure = "Your previous session is still saving. Please rejoin shortly."
+	if not self.persistent then
+		data, expires = Profile.new(), math.huge
+	else
+		for attempt = 1, 5 do
+			if self.closing or player.Parent ~= Players then break end
+			local now = os.time()
+			local ok, result = pcall(function()
+				return self.store:UpdateAsync("Player_" .. player.UserId, function(record)
+					if record ~= nil and (type(record) ~= "table" or not Profile.decode(record.data, Catalog, Grid)) then
+						error("Saved data did not pass schema validation")
+					end
+					return Lease.claim(record, token, now, LEASE_SECONDS, Profile.new)
+				end)
+			end)
+			if ok and result and result.lock and result.lock.owner == token then
+				data = Profile.decode(result.data, Catalog, Grid)
+				expires = result.lock.expires
+				break
+			end
+			if not ok then
+				warn("Profile load failed:", result)
+				failure = "Your data could not be loaded safely. Please try again shortly."
+			end
+			if attempt < 5 then task.wait(math.min(2 ^ (attempt - 1), 6) + math.random()) end
+		end
+	end
+	if data then
+		self.sessions[player] = {
+			data = data, token = token, expires = expires, active = true, saving = false, closing = false,
+			nextSave = os.clock() + SAVE_INTERVAL + math.random(0, 10),
+		}
+	end
+	self.loading[player] = nil
+	if not data then
+		if player.Parent == Players then player:Kick(failure) end
+		return false
+	end
+	if self.closing or player.Parent ~= Players then
+		self:release(player)
+		return false
+	end
+	player:SetAttribute("DataMode", if self.persistent then "Saved profile" else "Studio session (not saved)")
+	return true
+end
+
+function DataService:save(player, release)
+	local session = self.sessions[player]
+	if not session or not session.active then return false end
+	if release then session.closing = true end
+	if session.saving then
+		if not release then return false end
+		-- The final snapshot must follow any in-flight autosave.
+		repeat task.wait(0.05) until not session.saving
+	end
+	if not session.active then return false end
+	session.saving = true
+	local saved = not self.persistent
+	local snapshot = Profile.copy(session.data)
+	if self.persistent then
+		for attempt = 1, 3 do
+			local now = os.time()
+			if now >= session.expires then break end
+			local ok, result = pcall(function()
+				return self.store:UpdateAsync("Player_" .. player.UserId, function(record)
+					return Lease.commit(record, session.token, now, LEASE_SECONDS, snapshot, release)
+				end)
+			end)
+			if ok then
+				if result and ((release and result.lock == nil)
+					or (not release and result.lock and result.lock.owner == session.token)) then
+					saved = true
+					session.expires = now + LEASE_SECONDS
+				else
+					session.active = false
+				end
+				break
+			end
+			warn("Profile save failed:", result)
+			if attempt < 3 then task.wait(2 ^ (attempt - 1) + math.random()) end
+		end
+	end
+	if release then session.active = false end
+	session.saving = false
+	session.nextSave = os.clock() + (if saved then SAVE_INTERVAL else 10)
+	if not release and (not session.active or os.time() >= session.expires - 25) then
+		session.active = false
+		player:Kick("Saving is unavailable. Please rejoin shortly to protect your profile.")
+	end
+	return saved
+end
+
+function DataService:release(player)
+	local session = self.sessions[player]
+	if not session or session.releasing then return end
+	session.releasing = true
+	local saved = self:save(player, true)
+	if not saved and self.persistent then warn("Final save failed for user", player.UserId) end
+	self.sessions[player] = nil
+end
+
+function DataService:start()
+	task.spawn(function()
+		while not self.closing do
+			task.wait(5)
+			for player, session in self.sessions do
+				if session.active and not session.saving and not session.closing and os.clock() >= session.nextSave then
+					task.spawn(function() self:save(player, false) end)
+				end
+			end
+		end
+	end)
+	game:BindToClose(function()
+		self.closing = true
+		for player in self.sessions do task.spawn(function() self:release(player) end) end
+		local deadline = os.clock() + 25
+		while (next(self.sessions) or next(self.loading)) and os.clock() < deadline do task.wait(0.1) end
+	end)
+end
+
+return DataService
