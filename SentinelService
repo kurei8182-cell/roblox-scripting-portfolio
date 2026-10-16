@@ -1,0 +1,51 @@
+local Players = game:GetService("Players")
+local World = require(script.Parent.World)
+
+local SentinelService = {}
+
+function SentinelService.start(combat, world)
+	local running = true
+	game:BindToClose(function() running = false end)
+	for _, offset in { Vector3.new(-7, 3, -5), Vector3.new(7, 3, 5) } do
+		task.spawn(function()
+			local home = world.arena + offset
+			while running do
+				local model = World.sentinel(world.folder, home)
+				local actor = combat:register(model, true)
+				if not actor then model:Destroy() return end
+				while running and actor.humanoid.Health > 0 and model.Parent do
+					local nearest, distance = nil, 22
+					for _, player in Players:GetPlayers() do
+						local target = player.Character and combat.actors[player.Character]
+						if target and target.humanoid.Health > 0 and (target.root.Position - home).Magnitude < 24 then
+							local gap = (target.root.Position - actor.root.Position).Magnitude
+							if gap < distance then nearest, distance = target, gap end
+						end
+					end
+					local now = os.clock()
+					if now < actor.state.stunUntil or now < actor.state.busyUntil then
+						actor.humanoid:MoveTo(actor.root.Position)
+					elseif nearest then
+						if distance < 5.5 then
+							local aim = Vector3.new(nearest.root.Position.X, actor.root.Position.Y, nearest.root.Position.Z)
+							if (aim - actor.root.Position).Magnitude > 0.01 then actor.root.CFrame = CFrame.lookAt(actor.root.Position, aim) end
+							combat:act(model, "Light")
+						else
+							actor.humanoid:MoveTo(nearest.root.Position)
+						end
+					else
+						actor.humanoid:MoveTo(home)
+						if (actor.root.Position - home).Magnitude < 3 then actor.humanoid.Health = math.min(100, actor.humanoid.Health + 3) end
+					end
+					task.wait(0.1)
+				end
+				combat:unregister(model)
+				task.wait(2)
+				model:Destroy()
+				task.wait(2)
+			end
+		end)
+	end
+end
+
+return SentinelService
