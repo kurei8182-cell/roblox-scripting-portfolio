@@ -1,0 +1,15 @@
+{
+  "name": "kurodakoo | Systems Lab",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": { "Shared": { "$path": "src/shared" } },
+    "ServerScriptService": { "Systems": { "$path": "src/server" } },
+    "StarterPlayer": {
+      "$properties": { "CameraMaxZoomDistance": 40, "CameraMinZoomDistance": 6 },
+      "StarterPlayerScripts": { "Controllers": { "$path": "src/client" } }
+    },
+    "Workspace": { "$properties": { "FilteringEnabled": true, "Gravity": 196.2 } },
+    "Lighting": { "$properties": { "ClockTime": 14, "Brightness": 2, "GlobalShadows": true } },
+    "SoundService": { "$properties": { "RespectFilteringEnabled": true } }
+  }
+}
