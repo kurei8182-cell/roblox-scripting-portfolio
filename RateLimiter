@@ -1,0 +1,29 @@
+type Bucket = { tokens: number, time: number }
+type Limiter = { capacity: number, refill: number, buckets: { [number]: Bucket } }
+local RateLimiter = {}
+RateLimiter.__index = RateLimiter
+
+function RateLimiter.new(capacity: number, refill: number)
+	return setmetatable({ capacity = capacity, refill = refill, buckets = {} :: { [number]: Bucket } }, RateLimiter)
+end
+
+function RateLimiter.allow(self: Limiter, userId: number, now: number): boolean
+	local bucket = self.buckets[userId]
+	if not bucket then
+		bucket = { tokens = self.capacity, time = now }
+		self.buckets[userId] = bucket
+	end
+	bucket.tokens = math.min(self.capacity, bucket.tokens + math.max(0, now - bucket.time) * self.refill)
+	bucket.time = math.max(now, bucket.time)
+	if bucket.tokens < 1 then
+		return false
+	end
+	bucket.tokens -= 1
+	return true
+end
+
+function RateLimiter.remove(self: Limiter, userId: number)
+	self.buckets[userId] = nil
+end
+
+return RateLimiter
