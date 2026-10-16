@@ -1,0 +1,67 @@
+local Economy = {}
+
+function Economy.buy(data: any, catalog: any, itemId: string): (boolean, string)
+	local item = catalog[itemId]
+	if not item then
+		return false, "Unknown item."
+	end
+	local count = data.inventory[itemId] or 0
+	local owned = count
+	for _, piece in data.builds do
+		if piece.item == itemId then
+			owned += 1
+		end
+	end
+	if owned >= item.limit then
+		return false, "You already own the maximum."
+	end
+	if data.coins < item.price then
+		return false, "Not enough credits."
+	end
+	data.coins -= item.price
+	data.inventory[itemId] = count + 1
+	return true, "Bought " .. item.name .. "."
+end
+
+function Economy.place(data: any, catalog: any, grid: any, itemId: string, x: number, z: number, rotation: number): (any?, string?)
+	if #data.builds >= 40 then
+		return nil, "Your plot is full."
+	end
+	if (data.inventory[itemId] or 0) < 1 then
+		return nil, "You don't own that item."
+	end
+	local fits, reason = grid.fits(data.builds, catalog, itemId, x, z, rotation, 8)
+	if not fits then
+		return nil, reason
+	end
+	local piece = { id = data.nextId, item = itemId, x = x, z = z, rotation = rotation }
+	data.nextId += 1
+	data.inventory[itemId] -= 1
+	table.insert(data.builds, piece)
+	return piece
+end
+
+function Economy.remove(data: any, id: number): (boolean, string)
+	for index, piece in data.builds do
+		if piece.id == id then
+			data.inventory[piece.item] = (data.inventory[piece.item] or 0) + 1
+			table.remove(data.builds, index)
+			return true, "Returned to inventory."
+		end
+	end
+	return false, "That item is no longer on your plot."
+end
+
+function Economy.claimQuest(data: any): (boolean, string)
+	if data.questClaimed then
+		return false, "Reward already claimed."
+	end
+	if data.kills < 3 then
+		return false, "Defeat three sentinels first."
+	end
+	data.questClaimed = true
+	data.coins = math.min(1000000000, data.coins + 150)
+	return true, "Contract complete. +150 credits."
+end
+
+return Economy
