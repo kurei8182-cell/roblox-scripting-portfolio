@@ -1,0 +1,29 @@
+local Lease = {}
+
+function Lease.claim(record: any, owner: string, now: number, duration: number, fresh: () -> any): any?
+	local value = record or { data = fresh() }
+	if type(value) ~= "table" or type(value.data) ~= "table" then
+		error("Invalid saved record")
+	end
+	local lock = value.lock
+	if lock ~= nil and (type(lock) ~= "table" or type(lock.owner) ~= "string" or type(lock.expires) ~= "number") then
+		error("Invalid session lock")
+	end
+	if lock and lock.owner ~= owner and lock.expires > now then
+		return nil
+	end
+	return { data = value.data, lock = { owner = owner, expires = now + duration } }
+end
+
+function Lease.commit(record: any, owner: string, now: number, duration: number, snapshot: any, release: boolean): any?
+	if type(record) ~= "table" or type(record.lock) ~= "table" or record.lock.owner ~= owner
+		or type(record.lock.expires) ~= "number" or record.lock.expires <= now then
+		return nil
+	end
+	return {
+		data = snapshot,
+		lock = if release then nil else { owner = owner, expires = now + duration },
+	}
+end
+
+return Lease
