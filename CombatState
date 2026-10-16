@@ -1,0 +1,70 @@
+--!strict
+
+export type State = {
+	combo: number, lastAttack: number, busyUntil: number, stunUntil: number,
+	parryUntil: number, invulnerableUntil: number, serial: number,
+	cooldowns: { [string]: number },
+}
+
+local CombatState = {}
+
+function CombatState.new(): State
+	return {
+		combo = 0, lastAttack = -math.huge, busyUntil = 0, stunUntil = 0,
+		parryUntil = 0, invulnerableUntil = 0, serial = 0, cooldowns = {},
+	}
+end
+
+function CombatState.begin(state: State, action: string, now: number, config: any): (any?, string?)
+	if now < state.stunUntil or now < state.busyUntil then
+		return nil, "busy"
+	end
+	if now < (state.cooldowns[action] or 0) then
+		return nil, "cooldown"
+	end
+	local move = { damage = 0, windup = 0, combo = 0, serial = state.serial + 1 }
+	if action == "Light" then
+		state.combo = if now - state.lastAttack > config.comboReset then 1 else state.combo % 4 + 1
+		state.lastAttack = now
+		local recovery = if state.combo == 4 then config.finisherRecovery else config.lightRecovery
+		move.damage, move.windup, move.combo = config.lightDamage[state.combo], config.lightWindup, state.combo
+		state.busyUntil = now + config.lightWindup + recovery
+	elseif action == "Heavy" then
+		state.combo = 0
+		move.damage, move.windup = config.heavyDamage, config.heavyWindup
+		state.busyUntil = now + config.heavyWindup + config.heavyRecovery
+		state.cooldowns.Heavy = now + config.heavyCooldown
+	elseif action == "Parry" then
+		state.parryUntil = now + config.parryWindow
+		state.busyUntil = now + config.parryRecovery
+		state.cooldowns.Parry = now + config.parryCooldown
+	elseif action == "Dash" then
+		state.invulnerableUntil = now + config.dashInvulnerability
+		state.busyUntil = now + 0.2
+		state.cooldowns.Dash = now + config.dashCooldown
+	else
+		return nil, "unknown action"
+	end
+	state.serial += 1
+	move.serial = state.serial
+	return move
+end
+
+function CombatState.stun(state: State, now: number, duration: number)
+	state.stunUntil = math.max(state.stunUntil, now + duration)
+	state.parryUntil = 0
+	state.serial += 1
+	state.combo = 0
+end
+
+function CombatState.defense(state: State, now: number, facing: number): string
+	if now < state.invulnerableUntil then
+		return "Dodge"
+	end
+	if now < state.parryUntil and facing >= 0.25 then
+		return "Parry"
+	end
+	return "Hit"
+end
+
+return CombatState
