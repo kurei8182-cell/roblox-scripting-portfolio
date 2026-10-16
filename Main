@@ -1,0 +1,125 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Catalog = require(ReplicatedStorage.Shared.Catalog)
+local Profile = require(script.Parent.core.Profile)
+local Economy = require(script.Parent.core.Economy)
+local RateLimiter = require(script.Parent.core.RateLimiter)
+local DataService = require(script.Parent.DataService)
+local BuildService = require(script.Parent.BuildService)
+local CombatService = require(script.Parent.CombatService)
+local SentinelService = require(script.Parent.SentinelService)
+local World = require(script.Parent.World)
+
+local remote = Instance.new("RemoteEvent")
+remote.Name, remote.Parent = "SystemsEvent", ReplicatedStorage
+
+local world = World.create()
+local data = DataService.new()
+local builds = BuildService.new(data, world)
+local limiter = RateLimiter.new(18, 10)
+local connections = {}
+local actions = { Light = true, Heavy = true, Parry = true, Dash = true }
+
+local function sendProfile(player)
+	local profile = data:get(player)
+	if profile then remote:FireClient(player, "Profile", Profile.copy(profile)) end
+end
+
+local function notify(player, message)
+	if message then remote:FireClient(player, "Notice", message) end
+end
+
+local combat = CombatService.new(remote, function(player)
+	local profile = data:get(player)
+	if not profile then return end
+	profile.kills = math.min(1000000000, profile.kills + 1)
+	profile.coins = math.min(1000000000, profile.coins + 25)
+	notify(player, "Sentinel defeated. +25 credits.")
+	sendProfile(player)
+end)
+
+local function alive(player)
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	return humanoid and humanoid.Health > 0 and root, humanoid
+end
+
+remote.OnServerEvent:Connect(function(player, action, payload)
+	if not limiter:allow(player.UserId, os.clock()) then return end
+	if type(action) ~= "string" or #action > 24 then return end
+	local profile = data:get(player)
+	if not profile then return end
+	if action == "Sync" then sendProfile(player) return end
+	if actions[action] then
+		if player.Character then combat:act(player.Character, action) end
+		return
+	end
+	local ok, message
+	if action == "Buy" then
+		if type(payload) ~= "table" or type(payload.item) ~= "string" or #payload.item > 24 then return end
+		local root = alive(player)
+		if not root or (root.Position - world.shop.Position).Magnitude > 16 then
+			notify(player, "Visit the blue supply station to buy items.")
+			return
+		end
+		ok, message = Economy.buy(profile, Catalog, payload.item)
+	elseif action == "Heal" then
+		local root, humanoid = alive(player)
+		if not root then return end
+		if humanoid.Health >= humanoid.MaxHealth then notify(player, "You're already at full health.") return end
+		if (profile.inventory.Medkit or 0) < 1 then notify(player, "No medkits left.") return end
+		profile.inventory.Medkit -= 1
+		humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + Catalog.Medkit.heal)
+		ok, message = true, "Used one medkit."
+	elseif action == "Place" or action == "Remove" then
+		if type(payload) ~= "table" then return end
+		if action == "Place" then ok, message = builds:place(player, payload)
+		else ok, message = builds:remove(player, payload) end
+	elseif action == "ClaimQuest" then
+		ok, message = Economy.claimQuest(profile)
+	else
+		return
+	end
+	notify(player, message)
+	if ok then sendProfile(player) end
+end)
+
+world.prompt.Triggered:Connect(function(player)
+	local root = alive(player)
+	if root and (root.Position - world.shop.Position).Magnitude <= 16 then
+		remote:FireClient(player, "Shop")
+	end
+end)
+
+local function joined(player)
+	if connections[player] then return end
+	connections[player] = {}
+	if not data:load(player) then connections[player] = nil return end
+	builds:add(player)
+	local list = connections[player]
+	if not list then return end
+	local function characterAdded(character)
+		if combat.actors[character] then return end
+		local actor = combat:register(character, false)
+		if actor and player.Character ~= character then combat:unregister(character) end
+	end
+	table.insert(list, player.CharacterAdded:Connect(characterAdded))
+	table.insert(list, player.CharacterRemoving:Connect(function(character) combat:unregister(character) end))
+	if player.Character then task.spawn(characterAdded, player.Character) end
+	sendProfile(player)
+end
+
+Players.PlayerAdded:Connect(joined)
+Players.PlayerRemoving:Connect(function(player)
+	for _, connection in connections[player] or {} do connection:Disconnect() end
+	connections[player] = nil
+	if player.Character then combat:unregister(player.Character) end
+	builds:cleanup(player)
+	limiter:remove(player.UserId)
+	data:release(player)
+end)
+for _, player in Players:GetPlayers() do task.spawn(joined, player) end
+data:start()
+SentinelService.start(combat, world)
